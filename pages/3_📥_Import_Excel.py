@@ -1,0 +1,256 @@
+"""
+Page Import Excel
+"""
+
+import streamlit as st
+import sqlite3
+import pandas as pd
+from datetime import datetime
+from database import DB_NAME
+from constants import COTISATION_MIN
+
+# Configuration de la page
+st.set_page_config(
+    page_title="Import Excel - MEDD",
+    page_icon="📥",
+    layout="wide"
+)
+
+# ============================================================================
+# REQUÊTES POUR L'IMPORT
+# ============================================================================
+
+def get_all_participants():
+    """Récupère tous les participants"""
+    conn = sqlite3.connect(DB_NAME)
+    df = pd.read_sql_query("SELECT * FROM participants ORDER BY nom, prenom", conn)
+    conn.close()
+    return df
+
+def add_participant(nom, prenom, nombre_terrains=0):
+    """Ajoute un nouveau participant"""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO participants (nom, prenom, nombre_terrains, telephone, email) VALUES (?, ?, ?, ?, ?)",
+            (nom, prenom, nombre_terrains, "", "")
+        )
+        conn.commit()
+        conn.close()
+        return True, "Participant ajouté avec succès"
+    except sqlite3.IntegrityError:
+        return False, "Ce participant existe déjà"
+    except Exception as e:
+        return False, f"Erreur: {str(e)}"
+
+
+def import_cotisations_from_excel_pivot(df, auto_mark_paid=False):
+    """
+    Importe des cotisations depuis un DataFrame Excel au format pivot MEDD
+    Format attendu : colonnes 'nom', 'prenom', puis colonnes date format "ANNEE-MOIS"
+    """
+    participants = get_all_participants()
+    success_count = 0
+    errors = []
+
+    # Identifier les colonnes de mois (format YYYY-MM)
+    month_cols = [c for c in df.columns if "-" in str(c)]
+
+    if not month_cols:
+        return False, "Aucune colonne de date trouvée (format attendu: 2024-01, 2024-02, etc.)", []
+
+    total_operations = len(df) * len(month_cols)
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    current = 0
+
+    # Utiliser une transaction pour garantir l'intégrité
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    try:
+        for idx, row in df.iterrows():
+            nom = str(row.get('nom', '')).strip()
+            prenom = str(row.get('prenom', '')).strip()
+            
+            if not nom or not prenom:
+                errors.append(f"Ligne {idx+2}: nom ou prénom manquant")
+                continue
+            
+            # Trouver ou créer le participant
+            part = participants[(participants['nom'] == nom) & (participants['prenom'] == prenom)]
+            
+            if part.empty:
+                # Créer automatiquement le participant
+                nombre_terrains = int(row.get('nombre_terrains', 0)) if pd.notna(row.get('nombre_terrains')) else 0
+                add_participant(nom, prenom, nombre_terrains)
+                participants = get_all_participants()
+                part = participants[(participants['nom'] == nom) & (participants['prenom'] == prenom)]
+            
+            participant_id = part.iloc[0]['id']
+            
+            # Traiter chaque colonne de mois
+            for col in month_cols:
+                current += 1
+                progress_bar.progress(current / total_operations)
+                status_text.text(f"Import en cours... {current}/{total_operations}")
+                
+                if pd.isna(row[col]):
+                    continue
+                
+                try:
+                    # Parser la colonne (format: YYYY-MM)
+                    annee_str, mois_str = str(col).split("-")
+                    annee = int(annee_str)
+                    mois = int(mois_str)
+                    montant = float(row[col])
+                    
+                    if mois < 1 or mois > 12:
+                        errors.append(f"{nom} {prenom} - {col}: Mois invalide")
+                        continue
+                    
+                    # Validation du montant
+                    if montant < 0:
+                        errors.append(f"{nom} {prenom} - {col}: Montant négatif")
+                        continue
+                    
+                    if montant < COTISATION_MIN:
+                        errors.append(f"{nom} {prenom} - {col}: Montant inférieur au minimum ({COTISATION_MIN} FCFA)")
+                        continue
+                    
+                    # Insérer ou remplacer la cotisation
+                    paye_value = 1 if auto_mark_paid else 0
+                    date_paiement = datetime.now().strftime("%Y-%m-%d") if auto_mark_paid else None
+                    
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO cotisations
+                        (participant_id, mois, annee, montant, paye, date_paiement)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (participant_id, mois, annee, montant, paye_value, date_paiement))
+                    
+                    success_count += 1
+                    
+                except ValueError as e:
+                    errors.append(f"{nom} {prenom} - {col}: Format invalide ({e})")
+                except Exception as e:
+                    errors.append(f"{nom} {prenom} - {col}: Erreur {str(e)}")
+        
+        # Commit de la transaction si tout s'est bien passé
+        conn.commit()
+        
+    except Exception as e:
+        # Rollback en cas d'erreur
+        conn.rollback()
+        conn.close()
+        return False, f"Erreur lors de l'import: {str(e)}", errors
+    finally:
+        conn.close()
+
+    progress_bar.empty()
+    status_text.empty()
+
+    return True, f"{success_count} cotisation(s) importée(s)", errors
+
+
+st.title("📥 Import Excel")
+
+st.write("Importez vos cotisations depuis un fichier Excel au format pivot.")
+
+st.divider()
+
+st.subheader("📋 Format attendu")
+
+st.markdown("""
+Le fichier Excel doit avoir le format suivant :
+- **Colonne 1** : `nom` - Nom du participant
+- **Colonne 2** : `prenom` - Prénom du participant
+- **Colonne 3** (optionnelle) : `nombre_terrains` - Nombre de terrains
+- **Colonnes suivantes** : Format `ANNEE-MOIS` (ex: `2025-08`, `2025-09`, etc.)
+
+Les montants doivent être supérieurs ou égaux à **{:,}** FCFA.
+""".format(COTISATION_MIN).replace(',', ' '))
+
+st.info("💡 Les participants n'existant pas seront créés automatiquement lors de l'import.")
+
+st.markdown("**Exemple de fichier valide :**")
+
+example_data = {
+    'nom': ['Dupont', 'Martin', 'Durand'],
+    'prenom': ['Jean', 'Marie', 'Paul'],
+    'nombre_terrains': [2, 1, 3],
+    '2025-08': [2000, 1000, 3000],
+    '2025-09': [2000, 1000, None],
+    '2025-10': [2000, None, 3000]
+}
+st.dataframe(pd.DataFrame(example_data), use_container_width=True)
+
+st.divider()
+
+st.subheader("📤 Télécharger le fichier")
+
+# Option pour marquer comme payé
+auto_mark_paid = st.checkbox(
+    "✅ Marquer toutes les cotisations importées comme payées automatiquement",
+    value=False,
+    help="Si coché, toutes les cotisations importées seront marquées comme payées avec la date d'aujourd'hui"
+)
+
+uploaded_file = st.file_uploader(
+    "Choisir un fichier Excel (.xlsx ou .xls)", 
+    type=['xlsx', 'xls'], 
+    key="import_pivot"
+)
+
+if uploaded_file:
+    try:
+        df = pd.read_excel(uploaded_file)
+        
+        st.success(f"✅ Fichier chargé avec succès")
+        
+        st.write("**📊 Aperçu des données :**")
+        st.dataframe(df.head(10), use_container_width=True)
+        
+        # Statistiques du fichier
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Lignes détectées", len(df))
+        
+        # Validation du format
+        month_cols = [c for c in df.columns if "-" in str(c)]
+        with col2:
+            st.metric("Colonnes de date", len(month_cols))
+        
+        with col3:
+            total_cotis = sum(df[col].notna().sum() for col in month_cols)
+            st.metric("Cotisations à importer", total_cotis)
+        
+        if month_cols:
+            st.write(f"**📅 Colonnes de date détectées :** {', '.join(month_cols[:10])}{'...' if len(month_cols) > 10 else ''}")
+        else:
+            st.error("⚠️ Aucune colonne de date trouvée ! Vérifiez que vos colonnes sont au format ANNEE-MOIS (ex: 2025-08)")
+        
+        st.divider()
+        
+        if st.button("🚀 Confirmer et lancer l'import", type="primary", use_container_width=True):
+            with st.spinner("Import en cours..."):
+                success, msg, errors = import_cotisations_from_excel_pivot(df, auto_mark_paid)
+                if success:
+                    st.success(f"✅ {msg}")
+                    if errors:
+                        with st.expander(f"⚠️ {len(errors)} avertissement(s) / erreur(s)"):
+                            for error in errors:
+                                st.warning(error)
+                    st.balloons()
+                    st.info("💡 Rechargez la page ou consultez les autres pages pour voir les données importées")
+                else:
+                    st.error(f"❌ {msg}")
+                    if errors:
+                        with st.expander("Détails des erreurs"):
+                            for error in errors:
+                                st.error(error)
+    except Exception as e:
+        st.error(f"❌ Erreur de lecture du fichier: {str(e)}")
+        st.info("💡 Assurez-vous que le fichier est bien au format Excel (.xlsx ou .xls)")
+else:
+    st.info("👆 Veuillez sélectionner un fichier Excel pour commencer l'import")
