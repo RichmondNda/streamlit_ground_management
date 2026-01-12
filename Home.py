@@ -7,6 +7,7 @@ import streamlit as st
 import os
 from database import init_database, DB_NAME
 from backup_db import backup_database
+from auth import require_authentication, show_logout_button
 
 # Configuration de la page
 st.set_page_config(
@@ -15,6 +16,12 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Vérifier l'authentification
+require_authentication()
+
+# Afficher le bouton de déconnexion
+show_logout_button()
 
 # Initialiser la base de données
 init_database()

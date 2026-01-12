@@ -7,6 +7,13 @@ import sqlite3
 import pandas as pd
 from database import DB_NAME
 from constants import MOIS_NOMS, PRIX_TERRAIN
+from auth import require_authentication, show_logout_button
+
+# Vérifier l'authentification
+require_authentication()
+
+# Afficher le bouton de déconnexion
+show_logout_button()
 
 # ============================================================================
 # REQUÊTES STATISTIQUES

@@ -7,6 +7,7 @@ import sqlite3
 import pandas as pd
 from database import DB_NAME
 from constants import PRIX_TERRAIN
+from auth import require_authentication, show_logout_button
 
 # Configuration de la page
 st.set_page_config(
@@ -14,6 +15,12 @@ st.set_page_config(
     page_icon="👤",
     layout="wide"
 )
+
+# Vérifier l'authentification
+require_authentication()
+
+# Afficher le bouton de déconnexion
+show_logout_button()
 
 # ============================================================================
 # REQUÊTES PARTICIPANTS

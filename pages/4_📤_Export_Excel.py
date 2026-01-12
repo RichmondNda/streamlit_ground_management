@@ -12,6 +12,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from database import DB_NAME
 from constants import MOIS_NOMS
+from auth import require_authentication, show_logout_button
 
 # Configuration de la page
 st.set_page_config(
@@ -19,6 +20,12 @@ st.set_page_config(
     page_icon="📤",
     layout="wide"
 )
+
+# Vérifier l'authentification
+require_authentication()
+
+# Afficher le bouton de déconnexion
+show_logout_button()
 
 # ============================================================================
 # REQUÊTES POUR L'EXPORT

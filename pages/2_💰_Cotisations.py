@@ -8,6 +8,13 @@ import pandas as pd
 from datetime import datetime
 from database import DB_NAME
 from constants import MOIS_NOMS, COTISATION_MIN, COTISATION_PAR_TERRAIN
+from auth import require_authentication, show_logout_button
+
+# Vérifier l'authentification
+require_authentication()
+
+# Afficher le bouton de déconnexion
+show_logout_button()
 
 # ============================================================================
 # REQUÊTES COTISATIONS
