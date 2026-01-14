@@ -9,6 +9,7 @@ from datetime import datetime
 from database import DB_NAME
 from constants import MOIS_NOMS, COTISATION_MIN, COTISATION_PAR_TERRAIN
 from auth import require_authentication, show_logout_button
+from generate_report_pdf import generer_rapport_participant
 
 # Vérifier l'authentification
 require_authentication()
@@ -23,7 +24,7 @@ show_logout_button()
 def get_all_participants():
     """Récupère tous les participants"""
     conn = sqlite3.connect(DB_NAME)
-    query = "SELECT id, nom, prenom FROM participants ORDER BY nom, prenom"
+    query = "SELECT id, nom, prenom, nombre_terrains FROM participants ORDER BY nom, prenom"
     df = pd.read_sql_query(query, conn)
     conn.close()
     return df
@@ -38,34 +39,59 @@ def get_all_cotisations():
             p.nom || ' ' || p.prenom as participant,
             p.nom,
             p.prenom,
+            p.nombre_terrains,
             c.mois,
             c.annee,
             c.montant,
             c.paye,
-            c.date_paiement
+            c.date_paiement,
+            c.numero_terrain
         FROM cotisations c
         JOIN participants p ON c.participant_id = p.id
-        ORDER BY c.annee DESC, c.mois DESC, p.nom, p.prenom
+        ORDER BY c.annee DESC, c.mois DESC, p.nom, p.prenom, c.numero_terrain
     """
     df = pd.read_sql_query(query, conn)
     conn.close()
     return df
 
-def add_cotisation(participant_id, mois, annee, montant, paye=False):
+def add_cotisation(participant_id, mois, annee, montant, paye=False, numero_terrain=None):
     """Ajoute une nouvelle cotisation"""
     try:
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
         date_paiement = datetime.now().strftime("%Y-%m-%d") if paye else None
-        cursor.execute(
-            "INSERT INTO cotisations (participant_id, mois, annee, montant, paye, date_paiement) VALUES (?, ?, ?, ?, ?, ?)",
-            (participant_id, mois, annee, montant, 1 if paye else 0, date_paiement)
-        )
+        
+        # Si numero_terrain est None (tous les terrains), on obtient le nombre de terrains
+        if numero_terrain is None:
+            cursor.execute("SELECT nombre_terrains FROM participants WHERE id = ?", (participant_id,))
+            nb_terrains = cursor.fetchone()[0]
+            
+            if nb_terrains == 0:
+                return False, "Ce participant n'a aucun terrain"
+            
+            # Montant par terrain
+            montant_par_terrain = montant / nb_terrains
+            
+            # Créer une cotisation pour chaque terrain
+            for i in range(1, nb_terrains + 1):
+                cursor.execute(
+                    "INSERT INTO cotisations (participant_id, mois, annee, montant, paye, date_paiement, numero_terrain) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (participant_id, mois, annee, montant_par_terrain, 1 if paye else 0, date_paiement, i)
+                )
+            message = f"Cotisation ajoutée avec succès ({nb_terrains} terrains, {montant_par_terrain:,.0f} FCFA chacun)".replace(',', ' ')
+        else:
+            # Créer une seule cotisation pour le terrain spécifique
+            cursor.execute(
+                "INSERT INTO cotisations (participant_id, mois, annee, montant, paye, date_paiement, numero_terrain) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (participant_id, mois, annee, montant, 1 if paye else 0, date_paiement, numero_terrain)
+            )
+            message = f"Cotisation ajoutée avec succès (Terrain n°{numero_terrain})"
+        
         conn.commit()
         conn.close()
-        return True, "Cotisation ajoutée avec succès"
+        return True, message
     except sqlite3.IntegrityError:
-        return False, "Cette cotisation existe déjà pour ce participant"
+        return False, "Cette cotisation existe déjà pour ce terrain"
     except Exception as e:
         return False, f"Erreur: {str(e)}"
 
@@ -109,7 +135,7 @@ def delete_cotisation(cotisation_id):
 
 
 def generer_cotisations_mensuelles(mois, annee):
-    """Génère les cotisations impayées pour tous les participants pour un mois donné"""
+    """Génère les cotisations impayées pour tous les participants pour un mois donné (une par terrain)"""
     try:
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
@@ -122,24 +148,23 @@ def generer_cotisations_mensuelles(mois, annee):
         nb_existent = 0
         
         for participant_id, nom, prenom, nb_terrains in participants:
-            # Vérifier si la cotisation existe déjà
-            cursor.execute(
-                "SELECT id FROM cotisations WHERE participant_id = ? AND mois = ? AND annee = ?",
-                (participant_id, mois, annee)
-            )
-            
-            if cursor.fetchone() is None:
-                # Calculer le montant basé sur le nombre de terrains
-                montant = nb_terrains * COTISATION_PAR_TERRAIN
-                
-                # Créer la cotisation impayée
+            # Créer une cotisation pour chaque terrain
+            for numero_terrain in range(1, nb_terrains + 1):
+                # Vérifier si la cotisation existe déjà pour ce terrain
                 cursor.execute(
-                    "INSERT INTO cotisations (participant_id, mois, annee, montant, paye) VALUES (?, ?, ?, ?, 0)",
-                    (participant_id, mois, annee, montant)
+                    "SELECT id FROM cotisations WHERE participant_id = ? AND mois = ? AND annee = ? AND numero_terrain = ?",
+                    (participant_id, mois, annee, numero_terrain)
                 )
-                nb_ajoutes += 1
-            else:
-                nb_existent += 1
+                
+                if cursor.fetchone() is None:
+                    # Créer la cotisation impayée pour ce terrain
+                    cursor.execute(
+                        "INSERT INTO cotisations (participant_id, mois, annee, montant, paye, numero_terrain) VALUES (?, ?, ?, ?, 0, ?)",
+                        (participant_id, mois, annee, COTISATION_PAR_TERRAIN, numero_terrain)
+                    )
+                    nb_ajoutes += 1
+                else:
+                    nb_existent += 1
         
         conn.commit()
         conn.close()
@@ -188,6 +213,104 @@ with st.expander("🔄 Générer les cotisations mensuelles automatiquement", ex
             else:
                 st.error(msg)
 
+# Formulaire d'ajout rapide pour plusieurs terrains avec montants différents
+with st.expander("➕➕ Ajouter des cotisations avec montants différents par terrain", expanded=False):
+    st.info("💡 **Ajoutez rapidement plusieurs cotisations pour le même mois avec des montants différents par terrain**")
+    
+    participants_df = get_all_participants()
+    
+    if participants_df.empty:
+        st.warning("Aucun participant enregistré. Veuillez d'abord ajouter des participants.")
+    else:
+        with st.form("form_cotisation_multiples", clear_on_submit=True):
+            # Créer un dictionnaire pour le selectbox
+            participants_dict = {f"{row['nom']} {row['prenom']}": (row['id'], row['nombre_terrains']) 
+                               for _, row in participants_df.iterrows()}
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                selected_participant_multi = st.selectbox("Participant *", options=list(participants_dict.keys()), key="multi_participant")
+                participant_id_multi, nb_terrains_multi = participants_dict[selected_participant_multi]
+            with col2:
+                mois_dict = {nom: i+1 for i, nom in enumerate(MOIS_NOMS)}
+                selected_mois_multi = st.selectbox("Mois *", options=list(mois_dict.keys()),
+                                            index=datetime.now().month - 1, key="multi_mois")
+            
+            annee_multi = st.number_input("Année *", min_value=2000, max_value=2100, 
+                                   value=datetime.now().year, step=1, key="multi_annee")
+            
+            paye_multi = st.checkbox("Déjà payées", value=False, key="multi_paye")
+            
+            st.divider()
+            
+            if nb_terrains_multi > 0:
+                st.write(f"**Montants par terrain ({nb_terrains_multi} terrain(s))**")
+                
+                # Créer des inputs pour chaque terrain
+                montants_terrains = {}
+                cols_terrains = st.columns(min(4, nb_terrains_multi))
+                for i in range(1, nb_terrains_multi + 1):
+                    col_idx = (i - 1) % 4
+                    with cols_terrains[col_idx]:
+                        montant_terrain = st.number_input(
+                            f"Terrain n°{i} (FCFA)",
+                            min_value=0.0,
+                            value=float(COTISATION_PAR_TERRAIN),
+                            step=10.0,
+                            format="%.0f",
+                            key=f"terrain_{i}_montant"
+                        )
+                        montants_terrains[i] = montant_terrain
+                
+                # Afficher le total
+                total_multi = sum(montants_terrains.values())
+                st.metric("💰 Total", f"{total_multi:,.0f}".replace(',', ' ') + " FCFA")
+            else:
+                st.warning("⚠️ Ce participant n'a aucun terrain")
+                montants_terrains = {}
+            
+            submitted_multi = st.form_submit_button("Ajouter toutes les cotisations", type="primary")
+            
+            if submitted_multi:
+                if nb_terrains_multi == 0:
+                    st.error("❌ Impossible d'ajouter des cotisations : ce participant n'a aucun terrain")
+                elif not montants_terrains:
+                    st.error("❌ Aucun montant saisi")
+                else:
+                    mois_num_multi = mois_dict[selected_mois_multi]
+                    
+                    # Ajouter une cotisation pour chaque terrain avec son montant
+                    nb_ajoutees = 0
+                    nb_erreurs = 0
+                    erreurs_details = []
+                    
+                    for terrain_num, montant_val in montants_terrains.items():
+                        if montant_val > 0:  # Seulement si le montant est supérieur à 0
+                            success, msg = add_cotisation(
+                                participant_id_multi, 
+                                mois_num_multi, 
+                                annee_multi, 
+                                montant_val, 
+                                paye_multi, 
+                                terrain_num
+                            )
+                            if success:
+                                nb_ajoutees += 1
+                            else:
+                                nb_erreurs += 1
+                                erreurs_details.append(f"Terrain n°{terrain_num}: {msg}")
+                    
+                    # Afficher le résultat
+                    if nb_ajoutees > 0:
+                        st.success(f"✅ {nb_ajoutees} cotisation(s) ajoutée(s) avec succès")
+                    if nb_erreurs > 0:
+                        st.warning(f"⚠️ {nb_erreurs} erreur(s) :")
+                        for err in erreurs_details:
+                            st.write(f"  - {err}")
+                    
+                    if nb_ajoutees > 0:
+                        st.rerun()
+
 # Formulaire d'ajout de cotisation
 with st.expander("➕ Ajouter une cotisation", expanded=False):
     participants_df = get_all_participants()
@@ -197,12 +320,26 @@ with st.expander("➕ Ajouter une cotisation", expanded=False):
     else:
         with st.form("form_cotisation", clear_on_submit=True):
             # Créer un dictionnaire pour le selectbox
-            participants_dict = {f"{row['nom']} {row['prenom']}": row['id'] 
+            participants_dict = {f"{row['nom']} {row['prenom']}": (row['id'], row['nombre_terrains']) 
                                for _, row in participants_df.iterrows()}
             
             col1, col2 = st.columns(2)
             with col1:
                 selected_participant = st.selectbox("Participant *", options=list(participants_dict.keys()))
+                participant_id, nb_terrains = participants_dict[selected_participant]
+                
+                # Sélection du terrain
+                if nb_terrains > 0:
+                    terrains_options = ["Tous les terrains"] + [f"Terrain n°{i}" for i in range(1, nb_terrains + 1)]
+                    selected_terrain = st.selectbox(
+                        f"Terrain * ({nb_terrains} terrain(s) disponible(s))",
+                        options=terrains_options,
+                        help="Si 'Tous les terrains' est sélectionné, le montant sera réparti équitablement entre tous les terrains"
+                    )
+                else:
+                    st.warning("⚠️ Ce participant n'a aucun terrain")
+                    selected_terrain = "Tous les terrains"
+                
                 annee = st.number_input("Année *", min_value=2000, max_value=2100, 
                                        value=datetime.now().year, step=1)
             with col2:
@@ -217,15 +354,23 @@ with st.expander("➕ Ajouter une cotisation", expanded=False):
             submitted = st.form_submit_button("Ajouter la cotisation")
             
             if submitted:
-                participant_id = participants_dict[selected_participant]
-                mois_num = mois_dict[selected_mois]
-                
-                success, msg = add_cotisation(participant_id, mois_num, annee, montant, paye)
-                if success:
-                    st.success(msg)
-                    st.rerun()
+                if nb_terrains == 0:
+                    st.error("❌ Impossible d'ajouter une cotisation : ce participant n'a aucun terrain")
                 else:
-                    st.error(msg)
+                    mois_num = mois_dict[selected_mois]
+                    
+                    # Déterminer le numéro de terrain
+                    if selected_terrain == "Tous les terrains":
+                        numero_terrain = None
+                    else:
+                        numero_terrain = int(selected_terrain.split('n°')[1])
+                    
+                    success, msg = add_cotisation(participant_id, mois_num, annee, montant, paye, numero_terrain)
+                    if success:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
 
 st.divider()
 
@@ -273,7 +418,8 @@ with st.expander("💳 Marquer des cotisations comme payées", expanded=False):
             if st.session_state.paiement_cotisation_id != row['id']:
                 col1, col2, col3, col4, col5 = st.columns([3, 2, 2, 1, 1])
                 with col1:
-                    st.write(f"**{row['participant']}**")
+                    terrain_info = f" - Terrain n°{row['numero_terrain']}" if pd.notna(row['numero_terrain']) else " - Tous les terrains"
+                    st.write(f"**{row['participant']}**{terrain_info}")
                 with col2:
                     mois_nom = MOIS_NOMS[row['mois']-1]
                     st.write(f"{mois_nom} {row['annee']}")
@@ -291,7 +437,8 @@ with st.expander("💳 Marquer des cotisations comme payées", expanded=False):
                 # Confirmation de suppression
                 if st.session_state.delete_cotisation_id == row['id']:
                     st.warning(f"⚠️ **Confirmer la suppression de cette cotisation ?**")
-                    st.write(f"{row['participant']} - {mois_nom} {row['annee']} - {row['montant']:,.0f}".replace(',', ' ') + " FCFA")
+                    terrain_info = f" - Terrain n°{row['numero_terrain']}" if pd.notna(row['numero_terrain']) else " - Tous les terrains"
+                    st.write(f"{row['participant']}{terrain_info} - {mois_nom} {row['annee']} - {row['montant']:,.0f}".replace(',', ' ') + " FCFA")
                     col_confirm, col_cancel = st.columns(2)
                     with col_confirm:
                         if st.button("✅ Confirmer la suppression", key=f"confirm_del_cotis_{row['id']}", type="primary"):
@@ -308,7 +455,8 @@ with st.expander("💳 Marquer des cotisations comme payées", expanded=False):
                             st.rerun()
             else:
                 # Afficher le formulaire de saisie du montant
-                st.info(f"💰 **Enregistrer le paiement de {row['participant']}**")
+                terrain_info = f" - Terrain n°{row['numero_terrain']}" if pd.notna(row['numero_terrain']) else " - Tous les terrains"
+                st.info(f"💰 **Enregistrer le paiement de {row['participant']}**{terrain_info}")
                 mois_nom = MOIS_NOMS[row['mois']-1]
                 st.write(f"📅 {mois_nom} {row['annee']} - Montant prévu : {row['montant']:,.0f}".replace(',', ' ') + " FCFA")
                 
@@ -342,42 +490,159 @@ st.divider()
 # Tableau annuel (participants x mois)
 st.subheader(f"Tableau des cotisations {selected_year}")
 
+# Section pour générer des rapports PDF
+with st.expander("📄 Générer un rapport PDF pour un participant", expanded=False):
+    participants_df = get_all_participants()
+    if not participants_df.empty:
+        participants_dict = {f"{row['nom']} {row['prenom']}": row['id'] 
+                           for _, row in participants_df.iterrows()}
+        
+        selected_participant_pdf = st.selectbox(
+            "Sélectionner un participant", 
+            options=list(participants_dict.keys()),
+            key="participant_pdf"
+        )
+        
+        if st.button("📥 Générer et télécharger le rapport PDF", type="primary"):
+            participant_id = participants_dict[selected_participant_pdf]
+            pdf_buffer = generer_rapport_participant(participant_id)
+            
+            if pdf_buffer:
+                nom_fichier = selected_participant_pdf.replace(' ', '_')
+                st.download_button(
+                    label="📥 Télécharger le PDF",
+                    data=pdf_buffer,
+                    file_name=f"rapport_{nom_fichier}.pdf",
+                    mime="application/pdf",
+                    key="download_pdf_cotis"
+                )
+                st.success("✅ Rapport PDF généré avec succès !")
+            else:
+                st.error("❌ Erreur lors de la génération du rapport")
+    else:
+        st.info("Aucun participant disponible")
+
+st.divider()
+
 mois_names = MOIS_NOMS
 
-participants_year = sorted(cotis_year['participant'].unique())
-
-for participant_name in participants_year:
-    st.write(f"**{participant_name}**")
-    
+# Grouper par participant
+for participant_name in sorted(cotis_year['participant'].unique()):
     cotis_participant = cotis_year[cotis_year['participant'] == participant_name]
     
-    cols = st.columns(12)
-    for mois_num in range(1, 13):
-        cotis_mois = cotis_participant[cotis_participant['mois'] == mois_num]
+    # Récupérer le nombre de terrains
+    nb_terrains = cotis_participant['nombre_terrains'].iloc[0]
+    
+    # Afficher le nom du participant
+    st.write(f"**{participant_name}** ({nb_terrains} terrain(s))")
+    
+    # Afficher par terrain
+    for terrain_num in range(1, nb_terrains + 1):
+        cotis_terrain = cotis_participant[cotis_participant['numero_terrain'] == terrain_num]
         
-        with cols[mois_num - 1]:
-            if not cotis_mois.empty:
-                cotis_row = cotis_mois.iloc[0]
-                paye = cotis_row['paye']
-                cotis_id = cotis_row['id']
-                montant = cotis_row['montant']
+        # Si des cotisations existent pour ce terrain
+        if not cotis_terrain.empty:
+            st.write(f"  🏞️ Terrain n°{terrain_num}")
+            
+            cols = st.columns(12)
+            for mois_num in range(1, 13):
+                cotis_mois = cotis_terrain[cotis_terrain['mois'] == mois_num]
                 
-                # Bouton avec couleur selon statut
-                if paye:
-                    montant_format = f"{montant:,.0f}".replace(',', ' ')
-                    button_label = f"✓\n{montant_format}"
-                    button_type = "primary"
+                with cols[mois_num - 1]:
+                    if not cotis_mois.empty:
+                        cotis_row = cotis_mois.iloc[0]
+                        paye = cotis_row['paye']
+                        cotis_id = cotis_row['id']
+                        montant = cotis_row['montant']
+                        
+                        # Bouton avec couleur selon statut
+                        if paye:
+                            montant_format = f"{montant:,.0f}".replace(',', ' ')
+                            button_label = f"✓\n{montant_format}"
+                            button_type = "primary"
+                        else:
+                            montant_format = f"{montant:,.0f}".replace(',', ' ')
+                            button_label = f"✗\n{montant_format}"
+                            button_type = "secondary"
+                        
+                        if st.button(button_label, key=f"cotis_{cotis_id}", 
+                                   type=button_type, use_container_width=True):
+                            # Toggle le statut
+                            update_cotisation_status(cotis_id, not paye)
+                            st.rerun()
+                    else:
+                        st.markdown(f"<p style='text-align: center; color: #888; font-size: 0.75em;'>{mois_names[mois_num - 1][:3]}</p>", unsafe_allow_html=True)
+    
+    # Ligne de total par mois pour ce participant
+    st.write(f"  💰 **Total**")
+    cols_total = st.columns(12)
+    for mois_num in range(1, 13):
+        # Calculer le total pour ce mois (tous terrains confondus)
+        cotis_mois_all = cotis_participant[cotis_participant['mois'] == mois_num]
+        
+        with cols_total[mois_num - 1]:
+            if not cotis_mois_all.empty:
+                total_montant = cotis_mois_all['montant'].sum()
+                total_paye = cotis_mois_all[cotis_mois_all['paye'] == 1]['montant'].sum()
+                nb_cotis = len(cotis_mois_all)
+                nb_payees = len(cotis_mois_all[cotis_mois_all['paye'] == 1])
+                
+                # Afficher le total avec indication du statut
+                total_format = f"{total_montant:,.0f}".replace(',', ' ')
+                if nb_payees == nb_cotis:
+                    # Tout est payé
+                    st.markdown(f"<div style='background-color: #d4edda; padding: 5px; border-radius: 5px; text-align: center;'>"
+                              f"<strong>{total_format}</strong><br/>"
+                              f"<small style='color: #155724;'>✓ {nb_cotis}/{nb_cotis}</small></div>", 
+                              unsafe_allow_html=True)
+                elif nb_payees == 0:
+                    # Rien n'est payé
+                    st.markdown(f"<div style='background-color: #f8d7da; padding: 5px; border-radius: 5px; text-align: center;'>"
+                              f"<strong>{total_format}</strong><br/>"
+                              f"<small style='color: #721c24;'>✗ 0/{nb_cotis}</small></div>", 
+                              unsafe_allow_html=True)
                 else:
-                    montant_format = f"{montant:,.0f}".replace(',', ' ')
-                    button_label = f"✗\n{montant_format}"
-                    button_type = "secondary"
-                
-                if st.button(button_label, key=f"cotis_{cotis_id}", 
-                           type=button_type, use_container_width=True):
-                    # Toggle le statut
-                    update_cotisation_status(cotis_id, not paye)
-                    st.rerun()
+                    # Partiellement payé
+                    paye_format = f"{total_paye:,.0f}".replace(',', ' ')
+                    st.markdown(f"<div style='background-color: #fff3cd; padding: 5px; border-radius: 5px; text-align: center;'>"
+                              f"<strong>{total_format}</strong><br/>"
+                              f"<small style='color: #856404;'>⚠ {nb_payees}/{nb_cotis}<br/>{paye_format} payé</small></div>", 
+                              unsafe_allow_html=True)
             else:
-                st.markdown(f"<p style='text-align: center; color: #888; font-size: 0.85em;'>{mois_names[mois_num - 1]}</p>", unsafe_allow_html=True)
+                st.markdown(f"<p style='text-align: center; color: #888; font-size: 0.75em;'>-</p>", unsafe_allow_html=True)
+    
+    # Afficher aussi les cotisations sans numéro de terrain (anciennes)
+    cotis_sans_terrain = cotis_participant[cotis_participant['numero_terrain'].isna()]
+    if not cotis_sans_terrain.empty:
+        st.write(f"  📊 Cotisations globales (ancien format)")
+        
+        cols = st.columns(12)
+        for mois_num in range(1, 13):
+            cotis_mois = cotis_sans_terrain[cotis_sans_terrain['mois'] == mois_num]
+            
+            with cols[mois_num - 1]:
+                if not cotis_mois.empty:
+                    cotis_row = cotis_mois.iloc[0]
+                    paye = cotis_row['paye']
+                    cotis_id = cotis_row['id']
+                    montant = cotis_row['montant']
+                    
+                    # Bouton avec couleur selon statut
+                    if paye:
+                        montant_format = f"{montant:,.0f}".replace(',', ' ')
+                        button_label = f"✓\n{montant_format}"
+                        button_type = "primary"
+                    else:
+                        montant_format = f"{montant:,.0f}".replace(',', ' ')
+                        button_label = f"✗\n{montant_format}"
+                        button_type = "secondary"
+                    
+                    if st.button(button_label, key=f"cotis_{cotis_id}", 
+                               type=button_type, use_container_width=True):
+                        # Toggle le statut
+                        update_cotisation_status(cotis_id, not paye)
+                        st.rerun()
+                else:
+                    st.markdown(f"<p style='text-align: center; color: #888; font-size: 0.75em;'>{mois_names[mois_num - 1][:3]}</p>", unsafe_allow_html=True)
     
     st.divider()

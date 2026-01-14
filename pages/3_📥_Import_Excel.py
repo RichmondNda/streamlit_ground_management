@@ -34,21 +34,30 @@ def get_all_participants():
     conn.close()
     return df
 
-def add_participant(nom, prenom, nombre_terrains=0):
+def add_participant(nom, prenom, nombre_terrains=0, conn=None):
     """Ajoute un nouveau participant"""
-    try:
+    should_close = False
+    if conn is None:
         conn = sqlite3.connect(DB_NAME)
+        should_close = True
+    
+    try:
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO participants (nom, prenom, nombre_terrains, telephone, email) VALUES (?, ?, ?, ?, ?)",
             (nom, prenom, nombre_terrains, "", "")
         )
-        conn.commit()
-        conn.close()
+        if should_close:
+            conn.commit()
+            conn.close()
         return True, "Participant ajouté avec succès"
     except sqlite3.IntegrityError:
+        if should_close:
+            conn.close()
         return False, "Ce participant existe déjà"
     except Exception as e:
+        if should_close:
+            conn.close()
         return False, f"Erreur: {str(e)}"
 
 
@@ -57,7 +66,6 @@ def import_cotisations_from_excel_pivot(df, auto_mark_paid=False):
     Importe des cotisations depuis un DataFrame Excel au format pivot MEDD
     Format attendu : colonnes 'nom', 'prenom', puis colonnes date format "ANNEE-MOIS"
     """
-    participants = get_all_participants()
     success_count = 0
     errors = []
 
@@ -77,6 +85,12 @@ def import_cotisations_from_excel_pivot(df, auto_mark_paid=False):
     cursor = conn.cursor()
 
     try:
+        # Charger tous les participants dans un dict pour éviter les requêtes répétées
+        cursor.execute("SELECT id, nom, prenom, nombre_terrains FROM participants")
+        participants_cache = {}
+        for pid, nom, prenom, nb_terrains in cursor.fetchall():
+            participants_cache[f"{nom}|{prenom}"] = {'id': pid, 'nombre_terrains': nb_terrains}
+        
         for idx, row in df.iterrows():
             nom = str(row.get('nom', '')).strip()
             prenom = str(row.get('prenom', '')).strip()
@@ -86,16 +100,33 @@ def import_cotisations_from_excel_pivot(df, auto_mark_paid=False):
                 continue
             
             # Trouver ou créer le participant
-            part = participants[(participants['nom'] == nom) & (participants['prenom'] == prenom)]
+            key = f"{nom}|{prenom}"
             
-            if part.empty:
+            if key not in participants_cache:
                 # Créer automatiquement le participant
                 nombre_terrains = int(row.get('nombre_terrains', 0)) if pd.notna(row.get('nombre_terrains')) else 0
-                add_participant(nom, prenom, nombre_terrains)
-                participants = get_all_participants()
-                part = participants[(participants['nom'] == nom) & (participants['prenom'] == prenom)]
+                try:
+                    cursor.execute(
+                        "INSERT INTO participants (nom, prenom, nombre_terrains, telephone, email) VALUES (?, ?, ?, ?, ?)",
+                        (nom, prenom, nombre_terrains, "", "")
+                    )
+                    participant_id = cursor.lastrowid
+                    participants_cache[key] = {'id': participant_id, 'nombre_terrains': nombre_terrains}
+                except sqlite3.IntegrityError:
+                    # Le participant existe déjà, le récupérer
+                    cursor.execute("SELECT id, nombre_terrains FROM participants WHERE nom = ? AND prenom = ?", (nom, prenom))
+                    result = cursor.fetchone()
+                    if result:
+                        participants_cache[key] = {'id': result[0], 'nombre_terrains': result[1]}
+                    else:
+                        errors.append(f"Ligne {idx+2}: Impossible de créer ou trouver le participant {nom} {prenom}")
+                        continue
+                except Exception as e:
+                    errors.append(f"Ligne {idx+2}: Erreur création participant - {str(e)}")
+                    continue
             
-            participant_id = part.iloc[0]['id']
+            participant_id = participants_cache[key]['id']
+            nb_terrains = participants_cache[key]['nombre_terrains']
             
             # Traiter chaque colonne de mois
             for col in month_cols:
@@ -130,11 +161,49 @@ def import_cotisations_from_excel_pivot(df, auto_mark_paid=False):
                     paye_value = 1 if auto_mark_paid else 0
                     date_paiement = datetime.now().strftime("%Y-%m-%d") if auto_mark_paid else None
                     
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO cotisations
-                        (participant_id, mois, annee, montant, paye, date_paiement)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    """, (participant_id, mois, annee, montant, paye_value, date_paiement))
+                    # Créer une cotisation par terrain ou une seule avec NULL si nb_terrains <= 1
+                    if nb_terrains > 1:
+                        montant_par_terrain = montant / nb_terrains
+                        for terrain_num in range(1, nb_terrains + 1):
+                            # Vérifier si existe déjà
+                            cursor.execute("""
+                                SELECT id FROM cotisations 
+                                WHERE participant_id = ? AND mois = ? AND annee = ? AND numero_terrain = ?
+                            """, (participant_id, mois, annee, terrain_num))
+                            
+                            existing = cursor.fetchone()
+                            if existing:
+                                cursor.execute("""
+                                    UPDATE cotisations
+                                    SET montant = ?, paye = ?, date_paiement = ?
+                                    WHERE id = ?
+                                """, (montant_par_terrain, paye_value, date_paiement, existing[0]))
+                            else:
+                                cursor.execute("""
+                                    INSERT INTO cotisations
+                                    (participant_id, mois, annee, montant, paye, date_paiement, numero_terrain)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                                """, (participant_id, mois, annee, montant_par_terrain, paye_value, date_paiement, terrain_num))
+                    else:
+                        # Une seule cotisation sans numéro de terrain spécifique
+                        cursor.execute("""
+                            SELECT id FROM cotisations 
+                            WHERE participant_id = ? AND mois = ? AND annee = ? AND numero_terrain IS NULL
+                        """, (participant_id, mois, annee))
+                        
+                        existing = cursor.fetchone()
+                        if existing:
+                            cursor.execute("""
+                                UPDATE cotisations
+                                SET montant = ?, paye = ?, date_paiement = ?
+                                WHERE id = ?
+                            """, (montant, paye_value, date_paiement, existing[0]))
+                        else:
+                            cursor.execute("""
+                                INSERT INTO cotisations
+                                (participant_id, mois, annee, montant, paye, date_paiement, numero_terrain)
+                                VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """, (participant_id, mois, annee, montant, paye_value, date_paiement, None))
                     
                     success_count += 1
                     
@@ -163,6 +232,29 @@ def import_cotisations_from_excel_pivot(df, auto_mark_paid=False):
 st.title("📥 Import Excel")
 
 st.write("Importez vos cotisations depuis un fichier Excel au format pivot.")
+
+st.divider()
+
+# Bouton de téléchargement du fichier modèle
+st.subheader("📥 Télécharger le fichier modèle")
+
+st.info("💡 **Téléchargez le fichier Excel modèle pré-formaté avec instructions et données exemple**")
+
+import os
+modele_path = os.path.join(os.path.dirname(__file__), '..', 'modele_import_cotisations.xlsx')
+
+if os.path.exists(modele_path):
+    with open(modele_path, 'rb') as f:
+        st.download_button(
+            label="📥 Télécharger le fichier modèle Excel",
+            data=f,
+            file_name="modele_import_cotisations.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            use_container_width=True
+        )
+else:
+    st.warning("⚠️ Le fichier modèle n'existe pas. Générez-le d'abord avec `python3 generer_modele_import.py`")
 
 st.divider()
 

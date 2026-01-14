@@ -40,7 +40,8 @@ def get_cotisations_detaillees(annee=None, statut=None, participant_id=None):
             c.annee,
             c.montant,
             c.paye,
-            c.date_paiement
+            c.date_paiement,
+            c.numero_terrain
         FROM cotisations c
         JOIN participants p ON c.participant_id = p.id
         WHERE 1=1
@@ -61,7 +62,7 @@ def get_cotisations_detaillees(annee=None, statut=None, participant_id=None):
         query += " AND p.id = ?"
         params.append(participant_id)
     
-    query += " ORDER BY c.annee DESC, c.mois DESC, p.nom, p.prenom"
+    query += " ORDER BY c.annee DESC, c.mois DESC, p.nom, p.prenom, c.numero_terrain"
     
     df = pd.read_sql_query(query, conn, params=params)
     conn.close()
@@ -188,10 +189,11 @@ else:
     df_display['Mois'] = df_display['mois'].apply(lambda x: MOIS_NOMS[x-1] if 1 <= x <= 12 else str(x))
     df_display['Statut'] = df_display['paye'].apply(lambda x: "✅ Payée" if x == 1 else "⏳ Impayée")
     df_display['Montant'] = df_display['montant'].apply(lambda x: f"{x:,.0f}".replace(',', ' ') + " FCFA")
+    df_display['Terrain'] = df_display['numero_terrain'].apply(lambda x: f"n°{int(x)}" if pd.notna(x) else "Tous")
     
     # Colonnes à afficher
-    df_display = df_display[['nom', 'prenom', 'nombre_terrains', 'annee', 'Mois', 'Montant', 'Statut', 'date_paiement']]
-    df_display.columns = ['Nom', 'Prénom', 'Terrains', 'Année', 'Mois', 'Montant', 'Statut', 'Date paiement']
+    df_display = df_display[['nom', 'prenom', 'nombre_terrains', 'Terrain', 'annee', 'Mois', 'Montant', 'Statut', 'date_paiement']]
+    df_display.columns = ['Nom', 'Prénom', 'Nb Terrains', 'Terrain', 'Année', 'Mois', 'Montant', 'Statut', 'Date paiement']
     
     # Afficher le tableau avec alternance de couleurs
     st.dataframe(

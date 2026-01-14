@@ -40,8 +40,9 @@ def init_database():
             montant REAL NOT NULL,
             paye INTEGER NOT NULL DEFAULT 0,
             date_paiement TEXT,
+            numero_terrain INTEGER,
             FOREIGN KEY (participant_id) REFERENCES participants(id) ON DELETE CASCADE,
-            UNIQUE(participant_id, mois, annee)
+            UNIQUE(participant_id, mois, annee, numero_terrain)
         )
     ''')
     

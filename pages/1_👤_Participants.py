@@ -8,6 +8,7 @@ import pandas as pd
 from database import DB_NAME
 from constants import PRIX_TERRAIN
 from auth import require_authentication, show_logout_button
+from generate_report_pdf import generer_rapport_participant
 
 # Configuration de la page
 st.set_page_config(
@@ -212,7 +213,7 @@ else:
                     
                     # Définir le nombre de colonnes selon si le participant a des terrains
                     if nb_terrains > 0:
-                        col1, col2, col3, col4, col5, col6, col7 = st.columns([2, 1.5, 1.5, 1, 0.7, 0.7, 0.7])
+                        col1, col2, col3, col4, col5, col6, col7, col8 = st.columns([2, 1.5, 1.5, 1, 0.7, 0.7, 0.7, 0.7])
                     else:
                         col1, col2, col3, col4, col5, col6 = st.columns([2, 1.5, 1.5, 1, 0.7, 0.7])
                     
@@ -235,10 +236,23 @@ else:
                                     st.session_state.view_details_participant_id = row['id']
                                 st.rerun()
                     with col6 if nb_terrains > 0 else col5:
+                        if nb_terrains > 0:
+                            # Bouton pour télécharger le rapport PDF
+                            pdf_buffer = generer_rapport_participant(row['id'])
+                            if pdf_buffer:
+                                st.download_button(
+                                    label="📄",
+                                    data=pdf_buffer,
+                                    file_name=f"rapport_{row['nom']}_{row['prenom']}.pdf",
+                                    mime="application/pdf",
+                                    key=f"pdf_{row['id']}",
+                                    help="Télécharger le rapport PDF"
+                                )
+                    with col7 if nb_terrains > 0 else col5:
                         if st.button("✏️", key=f"edit_part_{row['id']}", help="Modifier"):
                             st.session_state.edit_participant_id = row['id']
                             st.rerun()
-                    with col7 if nb_terrains > 0 else col6:
+                    with col8 if nb_terrains > 0 else col6:
                         if st.button("🗑️", key=f"del_part_{row['id']}", help="Supprimer"):
                             st.session_state.delete_participant_id = row['id']
                             st.rerun()

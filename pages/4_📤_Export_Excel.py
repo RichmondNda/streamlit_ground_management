@@ -41,28 +41,43 @@ def get_available_years():
     return years
 
 
-def generate_cotisations_report():
+def generate_cotisations_report(start_date=None, end_date=None, participant_ids=None):
     """
-    Génère un rapport des cotisations depuis août 2025 jusqu'au mois actuel
+    Génère un rapport des cotisations pour une période donnée
+    
+    Args:
+        start_date: datetime - Date de début (par défaut: août 2025)
+        end_date: datetime - Date de fin (par défaut: aujourd'hui)
+        participant_ids: list - Liste des IDs de participants (None = tous)
     """
-    # Date de début : août 2025
-    start_date = datetime(2025, 8, 1)
-    # Date actuelle
-    current_date = datetime.now()
+    # Date de début par défaut : août 2025
+    if start_date is None:
+        start_date = datetime(2025, 8, 1)
+    # Date de fin par défaut : actuelle
+    if end_date is None:
+        end_date = datetime.now()
     
     # Générer la liste des mois
     months = []
     temp_date = start_date
-    while temp_date <= current_date:
+    while temp_date <= end_date:
         months.append((temp_date.year, temp_date.month))
         temp_date = temp_date + relativedelta(months=1)
     
-    # Récupérer tous les participants
+    # Récupérer les participants
     conn = sqlite3.connect(DB_NAME)
-    participants = pd.read_sql_query(
-        "SELECT id, nom, prenom FROM participants ORDER BY nom, prenom", 
-        conn
-    )
+    
+    if participant_ids and len(participant_ids) > 0:
+        # Filtrer par participants sélectionnés
+        placeholders = ','.join('?' * len(participant_ids))
+        query = f"SELECT id, nom, prenom, nombre_terrains FROM participants WHERE id IN ({placeholders}) ORDER BY nom, prenom"
+        participants = pd.read_sql_query(query, conn, params=participant_ids)
+    else:
+        # Tous les participants
+        participants = pd.read_sql_query(
+            "SELECT id, nom, prenom, nombre_terrains FROM participants ORDER BY nom, prenom", 
+            conn
+        )
     
     if participants.empty:
         conn.close()
@@ -75,11 +90,12 @@ def generate_cotisations_report():
     for year, month in months:
         col_name = f"{MOIS_NOMS[month-1]} {year}"
         
-        # Récupérer les cotisations pour ce mois
+        # Récupérer les cotisations pour ce mois (somme par participant si plusieurs terrains)
         query = """
-            SELECT participant_id, montant 
+            SELECT participant_id, SUM(montant) as montant 
             FROM cotisations 
             WHERE annee = ? AND mois = ? AND paye = 1
+            GROUP BY participant_id
         """
         cotis = pd.read_sql_query(query, conn, params=(year, month))
         
@@ -95,7 +111,7 @@ def generate_cotisations_report():
     result['TOTAL PAYÉ'] = result[month_cols].sum(axis=1)
     
     # Réorganiser les colonnes
-    final_cols = ['nom', 'prenom'] + month_cols + ['TOTAL PAYÉ']
+    final_cols = ['nom', 'prenom', 'nombre_terrains'] + month_cols + ['TOTAL PAYÉ']
     result = result[final_cols]
     
     conn.close()
@@ -162,9 +178,15 @@ def export_to_excel(df, months):
     return output
 
 
-def export_cotisations_to_excel_pivot(annee=None, only_paid=True):
+def export_cotisations_to_excel_pivot(start_date=None, end_date=None, participant_ids=None, only_paid=True):
     """
     Exporte les cotisations au format pivot avec style Excel
+    
+    Args:
+        start_date: datetime - Date de début
+        end_date: datetime - Date de fin
+        participant_ids: list - Liste des IDs de participants
+        only_paid: bool - Exporter uniquement les cotisations payées
     """
     conn = sqlite3.connect(DB_NAME)
 
@@ -176,9 +198,21 @@ def export_cotisations_to_excel_pivot(annee=None, only_paid=True):
     """
 
     params = []
-    if annee:
-        query += " AND c.annee = ?"
-        params.append(annee)
+    
+    # Filtrer par période
+    if start_date:
+        query += " AND (c.annee > ? OR (c.annee = ? AND c.mois >= ?))"
+        params.extend([start_date.year - 1, start_date.year, start_date.month])
+    
+    if end_date:
+        query += " AND (c.annee < ? OR (c.annee = ? AND c.mois <= ?))"
+        params.extend([end_date.year + 1, end_date.year, end_date.month])
+    
+    # Filtrer par participants
+    if participant_ids and len(participant_ids) > 0:
+        placeholders = ','.join('?' * len(participant_ids))
+        query += f" AND p.id IN ({placeholders})"
+        params.extend(participant_ids)
 
     if only_paid:
         query += " AND c.paye = 1"
@@ -270,13 +304,88 @@ def export_cotisations_to_excel_pivot(annee=None, only_paid=True):
 
 st.title("📤 Export Excel")
 
-st.subheader("📋 Rapport des cotisations depuis Août 2025")
+st.subheader("📋 Rapport des cotisations avec filtres")
 
-st.write("Ce rapport affiche les cotisations payées par chaque participant depuis août 2025 jusqu'à aujourd'hui.")
+# Filtres
+with st.expander("🔍 Filtres d'export", expanded=True):
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.write("**📅 Période**")
+        date_debut = st.date_input(
+            "Date de début",
+            value=datetime(2025, 8, 1),
+            min_value=datetime(2020, 1, 1),
+            max_value=datetime.now(),
+            format="DD/MM/YYYY",
+            key="export_date_debut"
+        )
+        
+    with col2:
+        st.write("**📅 Fin**")
+        date_fin = st.date_input(
+            "Date de fin",
+            value=datetime.now(),
+            min_value=datetime(2020, 1, 1),
+            max_value=datetime(2100, 12, 31),
+            format="DD/MM/YYYY",
+            key="export_date_fin"
+        )
+    
+    st.divider()
+    
+    # Sélection des participants
+    st.write("**👥 Participants**")
+    conn_temp = sqlite3.connect(DB_NAME)
+    all_participants = pd.read_sql_query(
+        "SELECT id, nom, prenom FROM participants ORDER BY nom, prenom",
+        conn_temp
+    )
+    conn_temp.close()
+    
+    if not all_participants.empty:
+        participants_dict = {f"{row['nom']} {row['prenom']}": row['id'] 
+                           for _, row in all_participants.iterrows()}
+        
+        tous_participants = st.checkbox(
+            "Tous les participants",
+            value=True,
+            key="export_tous_participants"
+        )
+        
+        if not tous_participants:
+            selected_participants = st.multiselect(
+                "Sélectionner les participants",
+                options=list(participants_dict.keys()),
+                key="export_selected_participants"
+            )
+            participant_ids_filter = [participants_dict[name] for name in selected_participants] if selected_participants else None
+        else:
+            participant_ids_filter = None
+            selected_participants = None
+    else:
+        st.warning("Aucun participant dans la base de données")
+        participant_ids_filter = None
+        selected_participants = None
+
+# Convertir les dates en datetime
+start_datetime = datetime.combine(date_debut, datetime.min.time())
+end_datetime = datetime.combine(date_fin, datetime.min.time())
+
+# Validation
+if start_datetime > end_datetime:
+    st.error("⚠️ La date de début doit être antérieure à la date de fin")
+    st.stop()
+
+# Afficher les filtres actifs
+st.info(f"📊 Export de **{start_datetime.strftime('%B %Y')}** à **{end_datetime.strftime('%B %Y')}** • "
+        f"Participants : **{'Tous' if participant_ids_filter is None else f'{len(selected_participants)} sélectionné(s)'}**")
+
+st.divider()
 
 # Générer le rapport
 with st.spinner("Génération du rapport..."):
-    result = generate_cotisations_report()
+    result = generate_cotisations_report(start_datetime, end_datetime, participant_ids_filter)
 
 if result is not None:
     df, months = result
@@ -334,38 +443,26 @@ with st.expander("🔧 Export personnalisé (ancien format)"):
 
 st.divider()
 
-# Ancien export (conservé en option)
-with st.expander("🔧 Export personnalisé (ancien format)"):
-    st.subheader("Exporter les cotisations au format pivot")
+# Export pivot avec les mêmes filtres
+with st.expander("🔧 Export format pivot (optionnel)"):
+    st.info("📌 Cet export utilise les mêmes filtres de période et de participants que ci-dessus")
+    
+    only_paid_pivot = st.checkbox("Uniquement les cotisations payées", value=True, key="only_paid_pivot")
 
-    col1, col2 = st.columns(2)
-
-    with col1:
-            # Filtrer par année
-            years = get_available_years()
-            year_options = ["Toutes"] + years
-            selected_year = st.selectbox("Année", year_options, key="export_year")
-
-    with col2:
-            # Option pour exporter uniquement les payées
-            only_paid = st.checkbox("Uniquement les cotisations payées", value=True)
-
-    if st.button("Générer l'export Excel", type="secondary"):
-            annee = None if selected_year == "Toutes" else selected_year
+    if st.button("Générer l'export pivot", type="secondary"):
+        with st.spinner("Génération du fichier Excel pivot..."):
+            excel = export_cotisations_to_excel_pivot(start_datetime, end_datetime, participant_ids_filter, only_paid_pivot)
+        
+        if excel:
+            st.success("✅ Fichier Excel pivot généré avec succès")
             
-            with st.spinner("Génération du fichier Excel..."):
-                excel = export_cotisations_to_excel_pivot(annee, only_paid)
+            filename = f"cotisations_pivot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
             
-            if excel:
-                st.success("✅ Fichier Excel généré avec succès")
-                
-                filename = f"cotisations_medd_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-                
-                st.download_button(
-                    label="📥 Télécharger le fichier Excel",
-                    data=excel,
-                    file_name=filename,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-            else:
-                st.warning("Aucune donnée à exporter avec ces filtres")
+            st.download_button(
+                label="📥 Télécharger le fichier Excel pivot",
+                data=excel,
+                file_name=filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        else:
+            st.warning("Aucune donnée à exporter avec ces filtres")
