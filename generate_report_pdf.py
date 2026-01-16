@@ -5,7 +5,7 @@ Module pour générer des rapports PDF pour les participants
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.units import cm
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.pdfgen import canvas
@@ -14,6 +14,10 @@ from datetime import datetime
 import sqlite3
 from database import DB_NAME
 from constants import MOIS_NOMS, PRIX_TERRAIN, COTISATION_PAR_TERRAIN
+import matplotlib
+matplotlib.use('Agg')  # Backend non-interactif pour génération de graphiques
+import matplotlib.pyplot as plt
+import numpy as np
 
 def generer_rapport_participant(participant_id):
     """
@@ -158,7 +162,80 @@ def generer_rapport_participant(participant_id):
         ]))
         
         story.append(stats_table)
-        story.append(Spacer(1, 1*cm))
+        story.append(Spacer(1, 0.5*cm))
+        
+        # ====================================================================
+        # AJOUTER DES GRAPHIQUES
+        # ====================================================================
+        
+        # 1. Camembert du statut des cotisations
+        fig1, ax1 = plt.subplots(figsize=(6, 4))
+        sizes = [nb_payees, len(cotisations) - nb_payees]
+        labels = ['Payées', 'Impayées']
+        colors_pie = ['#28a745', '#dc3545']
+        explode = (0.05, 0)  # Mettre en relief la première part
+        
+        ax1.pie(sizes, explode=explode, labels=labels, colors=colors_pie,
+                autopct='%1.1f%%', startangle=90, textprops={'fontsize': 11})
+        ax1.axis('equal')
+        plt.title('Répartition des cotisations', fontsize=12, fontweight='bold')
+        
+        # Sauvegarder le graphique dans un buffer
+        img_buffer1 = io.BytesIO()
+        plt.savefig(img_buffer1, format='png', dpi=150, bbox_inches='tight')
+        img_buffer1.seek(0)
+        plt.close()
+        
+        # Ajouter l'image au PDF
+        img1 = Image(img_buffer1, width=10*cm, height=6.5*cm)
+        story.append(img1)
+        story.append(Spacer(1, 0.5*cm))
+        
+        # 2. Graphique en barres par terrain (si applicable)
+        cotis_par_terrain = {}
+        for cotis in cotisations:
+            terrain_num = cotis[5]  # numero_terrain
+            if terrain_num:
+                if terrain_num not in cotis_par_terrain:
+                    cotis_par_terrain[terrain_num] = {'total': 0, 'paye': 0}
+                cotis_par_terrain[terrain_num]['total'] += cotis[2]
+                if cotis[3] == 1:
+                    cotis_par_terrain[terrain_num]['paye'] += cotis[2]
+        
+        if cotis_par_terrain:
+            fig2, ax2 = plt.subplots(figsize=(10, 4))
+            
+            terrains = sorted(cotis_par_terrain.keys())
+            montants_payes = [cotis_par_terrain[t]['paye'] for t in terrains]
+            montants_impayed = [cotis_par_terrain[t]['total'] - cotis_par_terrain[t]['paye'] for t in terrains]
+            
+            x = np.arange(len(terrains))
+            width = 0.6
+            
+            ax2.bar(x, montants_payes, width, label='Payé', color='#28a745')
+            ax2.bar(x, montants_impayed, width, bottom=montants_payes, 
+                   label='Impayé', color='#dc3545')
+            
+            ax2.set_xlabel('Terrain', fontsize=10)
+            ax2.set_ylabel('Montant (FCFA)', fontsize=10)
+            ax2.set_title('Cotisations par terrain', fontsize=12, fontweight='bold')
+            ax2.set_xticks(x)
+            ax2.set_xticklabels([f'n°{t}' for t in terrains])
+            ax2.legend()
+            ax2.grid(axis='y', alpha=0.3)
+            
+            # Sauvegarder le graphique
+            img_buffer2 = io.BytesIO()
+            plt.savefig(img_buffer2, format='png', dpi=150, bbox_inches='tight')
+            img_buffer2.seek(0)
+            plt.close()
+            
+            # Ajouter l'image au PDF
+            img2 = Image(img_buffer2, width=14*cm, height=6*cm)
+            story.append(img2)
+            story.append(Spacer(1, 0.5*cm))
+        
+        story.append(Spacer(1, 0.5*cm))
     
     # Détail des cotisations par année
     if cotisations:

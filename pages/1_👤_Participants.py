@@ -9,6 +9,7 @@ from database import DB_NAME
 from constants import PRIX_TERRAIN
 from auth import require_authentication, show_logout_button
 from generate_report_pdf import generer_rapport_participant
+from historique import ajouter_historique
 
 # Configuration de la page
 st.set_page_config(
@@ -64,8 +65,20 @@ def add_participant(nom, prenom, nombre_terrains=0, telephone="", email=""):
             "INSERT INTO participants (nom, prenom, nombre_terrains, telephone, email) VALUES (?, ?, ?, ?, ?)",
             (nom, prenom, nombre_terrains, telephone, email)
         )
+        participant_id = cursor.lastrowid
         conn.commit()
         conn.close()
+        
+        # Enregistrer dans l'historique
+        ajouter_historique(
+            'CREATE',
+            'participants',
+            participant_id,
+            f"Création du participant {nom} {prenom}",
+            None,
+            {'nom': nom, 'prenom': prenom, 'nombre_terrains': nombre_terrains, 'telephone': telephone, 'email': email}
+        )
+        
         return True, "Participant ajouté avec succès"
     except sqlite3.IntegrityError:
         return False, "Ce participant existe déjà"
@@ -77,12 +90,30 @@ def update_participant(participant_id, nom, prenom, nombre_terrains, telephone="
     try:
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
+        
+        # Récupérer les anciennes valeurs
+        cursor.execute("SELECT nom, prenom, nombre_terrains, telephone, email FROM participants WHERE id = ?", (participant_id,))
+        old_values = cursor.fetchone()
+        
         cursor.execute(
             "UPDATE participants SET nom = ?, prenom = ?, nombre_terrains = ?, telephone = ?, email = ? WHERE id = ?",
             (nom, prenom, nombre_terrains, telephone, email, participant_id)
         )
         conn.commit()
         conn.close()
+        
+        # Enregistrer dans l'historique
+        ajouter_historique(
+            'UPDATE',
+            'participants',
+            participant_id,
+            f"Modification du participant {nom} {prenom}",
+            {'nom': old_values[0], 'prenom': old_values[1], 'nombre_terrains': old_values[2], 
+             'telephone': old_values[3], 'email': old_values[4]},
+            {'nom': nom, 'prenom': prenom, 'nombre_terrains': nombre_terrains, 
+             'telephone': telephone, 'email': email}
+        )
+        
         return True, "Participant mis à jour avec succès"
     except Exception as e:
         return False, f"Erreur: {str(e)}"
@@ -92,10 +123,27 @@ def delete_participant(participant_id):
     try:
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
+        
+        # Récupérer les infos avant suppression
+        cursor.execute("SELECT nom, prenom, nombre_terrains FROM participants WHERE id = ?", (participant_id,))
+        participant_info = cursor.fetchone()
+        
         cursor.execute("DELETE FROM cotisations WHERE participant_id = ?", (participant_id,))
         cursor.execute("DELETE FROM participants WHERE id = ?", (participant_id,))
         conn.commit()
         conn.close()
+        
+        # Enregistrer dans l'historique
+        if participant_info:
+            ajouter_historique(
+                'DELETE',
+                'participants',
+                participant_id,
+                f"Suppression du participant {participant_info[0]} {participant_info[1]}",
+                {'nom': participant_info[0], 'prenom': participant_info[1], 'nombre_terrains': participant_info[2]},
+                None
+            )
+        
         return True, "Participant supprimé avec succès"
     except Exception as e:
         return False, f"Erreur: {str(e)}"

@@ -78,7 +78,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("Tableau de Bord")
+st.title("📊 Dashboard - Vue d'ensemble par année")
 
 # Filtres
 years = get_available_years()

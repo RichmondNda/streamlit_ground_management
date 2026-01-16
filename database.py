@@ -60,5 +60,29 @@ def init_database():
         ON cotisations(paye)
     ''')
     
+    # Table historique pour tracer toutes les modifications
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS historique (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date_action TEXT NOT NULL,
+            utilisateur TEXT DEFAULT 'admin',
+            type_action TEXT NOT NULL,
+            table_concernee TEXT NOT NULL,
+            id_enregistrement INTEGER,
+            details TEXT,
+            ancienne_valeur TEXT,
+            nouvelle_valeur TEXT
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_historique_date 
+        ON historique(date_action)
+    ''')
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_historique_type 
+        ON historique(type_action)
+    ''')
+    
     conn.commit()
     conn.close()
