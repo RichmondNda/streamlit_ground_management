@@ -1,0 +1,42 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info
+dist
+build
+
+# Environnement virtuel
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Données locales (optionnel - décommenter si vous ne voulez pas inclure la DB)
+# database.db
+# backups/
+
+# Fichiers temporaires
+*.log
+*.tmp
+.DS_Store
+
+# Documentation de développement
+CHANGELOG_TERRAINS.md
+AMELIORATIONS_IMPLEMENTEES.md
+GUIDE_COTISATIONS_MULTIPLES.md
+TERRAIN_FEATURE.md
+README_RAPPORTS_PDF.md
