@@ -6,7 +6,7 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 from datetime import datetime
-from database import DB_NAME
+from database import DB_NAME, init_database
 from constants import COTISATION_MIN
 from auth import require_authentication, show_logout_button
 
@@ -16,6 +16,9 @@ st.set_page_config(
     page_icon="📥",
     layout="wide"
 )
+
+# Initialiser la base de données
+init_database()
 
 # Vérifier l'authentification
 require_authentication()

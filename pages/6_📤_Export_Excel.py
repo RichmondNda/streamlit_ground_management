@@ -10,7 +10,7 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-from database import DB_NAME
+from database import DB_NAME, init_database
 from constants import MOIS_NOMS
 from auth import require_authentication, show_logout_button
 
@@ -20,6 +20,9 @@ st.set_page_config(
     page_icon="📤",
     layout="wide"
 )
+
+# Initialiser la base de données
+init_database()
 
 # Vérifier l'authentification
 require_authentication()
@@ -412,7 +415,10 @@ if result is not None:
         total_general = df['TOTAL PAYÉ'].sum()
         st.metric("Total général", f"{total_general:,.0f}".replace(',', ' ') + " FCFA")
     with col3:
-        st.metric("Période", f"Août 2025 - {MOIS_NOMS[datetime.now().month-1]} {datetime.now().year}")
+        # Formatter la période selon les dates sélectionnées
+        period_start = f"{MOIS_NOMS[start_datetime.month-1]} {start_datetime.year}"
+        period_end = f"{MOIS_NOMS[end_datetime.month-1]} {end_datetime.year}"
+        st.metric("Période", f"{period_start} - {period_end}")
     
     st.divider()
     

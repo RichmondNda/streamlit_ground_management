@@ -5,9 +5,12 @@ Page Tableau de bord
 import streamlit as st
 import sqlite3
 import pandas as pd
-from database import DB_NAME
+from database import DB_NAME, init_database
 from constants import MOIS_NOMS, PRIX_TERRAIN
 from auth import require_authentication, show_logout_button
+
+# Initialiser la base de données
+init_database()
 
 # Vérifier l'authentification
 require_authentication()
@@ -133,7 +136,6 @@ with col_reste:
     if stats['montant_impaye'] > 0:
         st.caption(f"{stats['montant_impaye']:,.0f}".replace(',', ' ') + " FCFA")
 
-st.divider()
 
 st.divider()
 

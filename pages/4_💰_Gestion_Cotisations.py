@@ -223,7 +223,122 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("Gestion des Cotisations")
+# Styles CSS personnalisés
+st.markdown("""
+<style>
+    /* Amélioration du titre principal */
+    h1 {
+        color: #fc6b03;
+        font-size: 2.5rem !important;
+        font-weight: 700 !important;
+        padding-bottom: 1rem;
+        border-bottom: 3px solid #fc6b03;
+        margin-bottom: 2rem;
+    }
+    
+    /* Amélioration des sous-titres */
+    h2, h3 {
+        color: #fc6b03;
+        font-weight: 600 !important;
+    }
+    
+    /* Style des cartes/conteneurs */
+    .stExpander {
+        background-color: #ffffff;
+        border: 1px solid #e0e0e0;
+        border-radius: 10px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        margin-bottom: 1rem;
+    }
+    
+    /* Style des métriques */
+    [data-testid="stMetricValue"] {
+        color: #fc6b03;
+        font-size: 1.8rem !important;
+        font-weight: 700 !important;
+    }
+    
+    /* Amélioration des conteneurs */
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+    }
+    
+    /* Style des boutons primaires */
+    .stButton > button[kind="primary"] {
+        background-color: #fc6b03;
+        border-color: #fc6b03;
+        color: white;
+        font-weight: 600;
+        border-radius: 8px;
+        padding: 0.5rem 1rem;
+    }
+    
+    .stButton > button[kind="primary"]:hover {
+        background-color: #e35f02;
+        border-color: #e35f02;
+    }
+    
+    /* Style des dividers */
+    hr {
+        border-color: #fc6b03;
+        margin: 2rem 0;
+    }
+    
+    /* Style du conteneur avec scroll */
+    [data-testid="stVerticalBlock"] > div:has(> div > div > div.stMarkdown) {
+        background-color: #fafafa;
+        border-radius: 10px;
+        padding: 1rem;
+    }
+    
+    /* Amélioration des inputs */
+    .stTextInput > div > div > input,
+    .stSelectbox > div > div > div,
+    .stNumberInput > div > div > input {
+        border-radius: 8px;
+        border-color: #e0e0e0;
+    }
+    
+    /* Messages de succès */
+    .stSuccess {
+        background-color: #e8f5e9;
+        color: #2e7d32;
+        border-left: 4px solid #4caf50;
+        border-radius: 8px;
+        padding: 1rem;
+    }
+    
+    /* Messages d'erreur */
+    .stError {
+        background-color: #ffebee;
+        color: #c62828;
+        border-left: 4px solid #f44336;
+        border-radius: 8px;
+        padding: 1rem;
+    }
+    
+    /* Messages d'avertissement */
+    .stWarning {
+        background-color: #fff3e0;
+        color: #e65100;
+        border-left: 4px solid #ff9800;
+        border-radius: 8px;
+        padding: 1rem;
+    }
+    
+    /* Messages d'info */
+    .stInfo {
+        background-color: #e3f2fd;
+        color: #0d47a1;
+        border-left: 4px solid #2196f3;
+        border-radius: 8px;
+        padding: 1rem;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("💰 Gestion des Cotisations")
 
 # Initialiser session_state pour le paiement en cours
 if 'paiement_cotisation_id' not in st.session_state:

@@ -7,7 +7,7 @@ import sqlite3
 import pandas as pd
 from datetime import datetime
 import urllib.parse
-from database import DB_NAME
+from database import DB_NAME, init_database
 from constants import MOIS_NOMS
 from auth import require_authentication, show_logout_button
 from historique import ajouter_historique
@@ -18,6 +18,9 @@ st.set_page_config(
     page_icon="📱",
     layout="wide"
 )
+
+# Initialiser la base de données
+init_database()
 
 # Vérifier l'authentification
 require_authentication()

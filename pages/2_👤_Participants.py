@@ -5,7 +5,7 @@ Page Gestion des participants
 import streamlit as st
 import sqlite3
 import pandas as pd
-from database import DB_NAME
+from database import DB_NAME, init_database
 from constants import PRIX_TERRAIN
 from auth import require_authentication, show_logout_button
 from generate_report_pdf import generer_rapport_participant
@@ -17,6 +17,9 @@ st.set_page_config(
     page_icon="👤",
     layout="wide"
 )
+
+# Initialiser la base de données
+init_database()
 
 # Vérifier l'authentification
 require_authentication()
